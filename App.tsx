@@ -59,6 +59,8 @@ const App: React.FC = () => {
   const [activePolygon, setActivePolygon] = useState<L.LatLng[] | null>(null);
   const [copied, setCopied] = useState(false);
   const [loadElapsed, setLoadElapsed] = useState(0);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   // Suffolk / NYS GIS zips are much slower to load than NYC Open Data zips, so
   // the loading UI tailors its messaging for them.
@@ -162,11 +164,25 @@ const App: React.FC = () => {
     
     let isCancelled = false;
     setLoading(true);
+    setLoadFailed(false);
     setFetchError(null);
     setActivePolygon(null);
     setPreviewHouseId(null);
-    
+
     localStorage.setItem('dawah_selected_zip', selectedZip);
+
+    // Settle the load exactly once: show the data if we got any, otherwise mark
+    // the load as failed so the UI can offer a retry instead of a silent blank map.
+    const settle = (houses: House[] | null) => {
+      if (isCancelled) return;
+      if (houses && houses.length > 0) {
+        setSocrataHouses(houses);
+        setLoadFailed(false);
+      } else {
+        setLoadFailed(true);
+      }
+      setLoading(false);
+    };
 
     const loadZipData = async () => {
       try {
@@ -177,13 +193,14 @@ const App: React.FC = () => {
         if (res.ok) {
           const result = await res.json();
           if (isCancelled) return;
-          if (result.status === "success" && Array.isArray(result.houses)) {
-            setSocrataHouses(result.houses);
-            setLoading(false);
+          // Require a non-empty result: an empty success (e.g. some upstream pages
+          // timed out) should fall through to the direct fallback below.
+          if (result.status === "success" && Array.isArray(result.houses) && result.houses.length > 0) {
+            settle(result.houses);
             return;
           }
         }
-        
+
         // Direct Fallback if API route is unavailable
         const isNycZip = /^(100|101|102|103|104|110|111|112|113|114|116)/.test(selectedZip);
         if (isNycZip) {
@@ -213,7 +230,7 @@ const App: React.FC = () => {
               });
             }
           }
-          setSocrataHouses(houses);
+          settle(houses);
         } else {
           // Suffolk GIS Fallback
           const whereZip = `COUNTY_NAME='Suffolk' AND (LOC_ZIP='${selectedZip}' OR MAIL_ZIP LIKE '${selectedZip}%')`;
@@ -247,14 +264,11 @@ const App: React.FC = () => {
               });
             }
           }
-          setSocrataHouses(houses);
+          settle(houses);
         }
-        setLoading(false);
       } catch (err: any) {
         console.warn("Properties fetch notice:", err);
-        if (!isCancelled) {
-          setLoading(false);
-        }
+        settle(null);
       }
     };
 
@@ -263,7 +277,7 @@ const App: React.FC = () => {
     return () => {
       isCancelled = true;
     };
-  }, [selectedZip]);
+  }, [selectedZip, reloadNonce]);
 
   // Derived state that combines static open-data with modified states from Firestore / LocalStorage
   const currentHouses = useMemo(() => {
@@ -468,6 +482,28 @@ const App: React.FC = () => {
                        First load of a new county area can take up to ~20s. It'll be instant next time.
                     </span>
                  )}
+              </div>
+           )}
+
+           {!loading && loadFailed && currentHouses.length === 0 && (
+              <div className="bg-white/95 backdrop-blur-md border border-rose-100 px-4 py-3 rounded-2xl shadow-lg flex flex-col gap-2 min-w-[240px] max-w-[300px] animate-in fade-in slide-in-from-top-4 duration-300 pointer-events-auto">
+                 <div className="flex items-center gap-2">
+                    <XCircle className="w-4 h-4 text-rose-500 shrink-0" />
+                    <span className="text-rose-700 font-black text-[10px] uppercase tracking-[0.15em] flex-1">
+                       Couldn't load this area
+                    </span>
+                 </div>
+                 <span className="text-[10px] text-slate-500 font-medium leading-snug">
+                    {isSuffolkZip
+                       ? "The county parcel service is busy or slow right now. Give it a moment and try again."
+                       : "Data service didn't respond. Please try again."}
+                 </span>
+                 <button
+                    onClick={() => setReloadNonce(n => n + 1)}
+                    className="mt-1 w-full bg-emerald-600 text-white py-2.5 rounded-xl font-black text-[10px] uppercase tracking-[0.15em] flex items-center justify-center gap-2 active:scale-95 transition-all shadow-md"
+                 >
+                    <RefreshCw className="w-3.5 h-3.5" /> Retry
+                 </button>
               </div>
            )}
 
