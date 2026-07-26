@@ -172,35 +172,66 @@ async function startServer() {
         // 2. Secondary mailing query
         const whereMail = `COUNTY_NAME='Suffolk' AND MAIL_ZIP LIKE '${effectiveZip}%'`;
 
-        const fields = 'OBJECTID,COUNTY_NAME,MUNI_NAME,LOC_ZIP,PARCEL_ADDR,LOC_ST_NBR,LOC_STREET,CITYTOWN_NAME,PROP_CLASS,PRINT_KEY,SBL,PRIMARY_OWNER,FULL_MARKET_VAL,ACRES,MAIL_ZIP';
+        // Only request the columns we actually render; smaller rows = faster transfers.
+        const fields = 'OBJECTID,PRINT_KEY,LOC_ZIP,CITYTOWN_NAME,MUNI_NAME,PARCEL_ADDR,LOC_ST_NBR,LOC_STREET,PRIMARY_OWNER';
+        const GIS_BASE = 'https://gisservices.its.ny.gov/arcgis/rest/services/NYS_Tax_Parcel_Centroid_Points/FeatureServer/0/query';
+        const PAGE_SIZE = 1000;
 
-        const fetchGISPage = async (whereStr: string, offset: number = 0) => {
-          const gisUrl = `https://gisservices.its.ny.gov/arcgis/rest/services/NYS_Tax_Parcel_Centroid_Points/FeatureServer/0/query?where=${encodeURIComponent(whereStr)}&outFields=${fields}&f=json&resultRecordCount=1000&resultOffset=${offset}&returnGeometry=true&outSR=4326`;
+        const gisFetch = async (params: string, timeoutMs: number) => {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 20000);
+          const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
           try {
-            const res = await fetch(gisUrl, { signal: controller.signal });
+            const res = await fetch(`${GIS_BASE}?${params}`, { signal: controller.signal });
             clearTimeout(timeoutId);
-            if (!res.ok) return [];
-            const data = await res.json();
-            return data.features || [];
+            if (!res.ok) return null;
+            return await res.json();
           } catch (e) {
             clearTimeout(timeoutId);
-            return [];
+            return null;
           }
         };
 
-        try {
-          // Fetch up to 10 pages of mail zip results and 3 pages of physical results in parallel
-          const mailOffsets = [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000];
-          const physOffsets = [0, 1000, 2000];
+        const fetchGISPage = async (whereStr: string, offset: number = 0) => {
+          const data = await gisFetch(
+            `where=${encodeURIComponent(whereStr)}&outFields=${fields}&f=json&resultRecordCount=${PAGE_SIZE}&resultOffset=${offset}&returnGeometry=true&outSR=4326`,
+            25000
+          );
+          return data?.features || [];
+        };
 
-          const pagePromises = [
-            ...mailOffsets.map(off => fetchGISPage(whereMail, off)),
-            ...physOffsets.map(off => fetchGISPage(wherePhysical, off))
+        // Run page fetches with a small concurrency cap. The NYS GIS server is
+        // slow (~13s/request) AND throttles heavy concurrency: firing ~13 pages at
+        // once pushes every request past the timeout and returns nothing (the old
+        // behavior — Suffolk "loading forever then empty"). Three at a time is
+        // reliably fast; the whole result is cached so the cost is paid once.
+        const runPool = async <T,>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> => {
+          const results: T[] = new Array(tasks.length);
+          let cursor = 0;
+          const worker = async () => {
+            while (cursor < tasks.length) {
+              const idx = cursor++;
+              results[idx] = await tasks[idx]();
+            }
+          };
+          await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
+          return results;
+        };
+
+        try {
+          // Bounded page set (6 pages) fetched in a single reliable wave. Testing
+          // showed the GIS server serves 6 concurrent requests fine (~19s) but
+          // throttles ~13 into timeouts, so 6 is the sweet spot: full coverage,
+          // one round trip. The radius filter below trims to the town area.
+          const GIS_CONCURRENCY = 6;
+          const physOffsets = [0, 1000, 2000];
+          const mailOffsets = [0, 1000, 2000];
+
+          const tasks = [
+            ...physOffsets.map(off => () => fetchGISPage(wherePhysical, off)),
+            ...mailOffsets.map(off => () => fetchGISPage(whereMail, off)),
           ];
 
-          const pageResults = await Promise.all(pagePromises);
+          const pageResults = await runPool(tasks, GIS_CONCURRENCY);
 
           const rawFeaturesMap = new Map();
           pageResults.flat().forEach((f: any) => {
