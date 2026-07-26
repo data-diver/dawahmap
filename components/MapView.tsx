@@ -273,7 +273,7 @@ const MapView: React.FC<MapViewProps> = ({
     <div className={`h-full w-full z-0 relative bg-[#f8fafc] ${isSelectionMode ? 'cursor-crosshair selection-mode' : ''}`}>
       <MapContainer
         center={[40.78, -73.4]}
-        zoom={9}
+        zoom={9} 
         style={{ height: '100%', width: '100%' }}
         zoomControl={false}
         attributionControl={false}

@@ -156,13 +156,8 @@ async function startServer() {
         return sendJsonPayload(req, res, payload, Math.floor(PROPERTY_TTL_MS / 1000));
       } else {
         // Suffolk County / NYS GIS Tax Parcel Centroid Points
-        let effectiveZip = zip;
-        if (zip === '11734') effectiveZip = '11743'; // Map transposed typo 11734 -> 11743 (Huntington, NY)
-
-        let effectiveArea = areaName;
-        if (!effectiveArea || effectiveArea.trim() === '' || zip === '11734') {
-          effectiveArea = 'Huntington (Suffolk)';
-        }
+        const effectiveZip = zip;
+        const effectiveArea = areaName || '';
 
         console.log(`Fetching NYS GIS Tax Parcels for Suffolk zip ${effectiveZip} (${effectiveArea})...`);
         const cleanArea = effectiveArea.replace(/\s*\(Suffolk\)/i, '').replace(/\/.*/, '').replace(/\s*Station\b/i, '').trim();
@@ -278,14 +273,8 @@ async function startServer() {
             }
           }
 
-          // Dynamic max distance threshold (in km)
-          // Wide geographic zips (e.g. Huntington 11743, Riverhead 11901) get up to 7.5km; standard town zips get 3.8km - 4.2km
-          let maxKm = 4.2;
-          if (['11743', '11734', '11768', '11901', '11968', '11937', '11772'].includes(effectiveZip)) {
-            maxKm = 7.5;
-          } else {
-            maxKm = 3.8;
-          }
+          // Standard max distance threshold (in km) from area centroid for Suffolk County
+          const maxKm = 7.5;
 
           const houses = [];
           for (const f of rawFeatures) {
