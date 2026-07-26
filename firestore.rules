@@ -1,0 +1,52 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    // Collection: houses
+    // Document ID: {houseId}
+    // Fields:
+    //   - id: string (required)
+    //   - address: string (required)
+    //   - street: string (optional)
+    //   - owner: string (optional)
+    //   - lat: number (required)
+    //   - lng: number (required)
+    //   - zip: string (required)
+    //   - status: string (required, enum: TODO, VISITED, REVISIT, NOT_INTERESTED)
+    //   - notes: list (optional)
+    //   - lastUpdated: number (optional)
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function hasRequiredFields() {
+      return request.resource.data.keys().hasAll(['id', 'address', 'lat', 'lng', 'zip', 'status']);
+    }
+
+    function isValidHouse() {
+      return hasRequiredFields() &&
+             request.resource.data.id is string &&
+             request.resource.data.address is string &&
+             request.resource.data.lat is number &&
+             request.resource.data.lng is number &&
+             request.resource.data.zip is string &&
+             request.resource.data.status in ['TODO', 'VISITED', 'REVISIT', 'NOT_INTERESTED'];
+    }
+
+    match /houses/{houseId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidHouse();
+      allow update: if isAuthenticated() && isValidHouse();
+      allow delete: if isAuthenticated();
+    }
+
+    match /system/{document=**} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+  }
+}

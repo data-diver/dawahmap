@@ -1,0 +1,28 @@
+{
+  "entities": {
+    "House": {
+      "title": "House",
+      "description": "A house location for community outreach.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "address": { "type": "string" },
+        "street": { "type": "string" },
+        "owner": { "type": "string" },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "zip": { "type": "string" },
+        "status": { "type": "string", "enum": ["TODO", "VISITED", "REVISIT", "NOT_INTERESTED"] },
+        "notes": { "type": "array", "items": { "type": "string" } },
+        "lastUpdated": { "type": "number" }
+      },
+      "required": ["id", "address", "lat", "lng", "zip", "status"]
+    }
+  },
+  "firestore": {
+    "/houses/{houseId}": {
+      "schema": { "$ref": "#/entities/House" },
+      "description": "Collection of houses."
+    }
+  }
+}

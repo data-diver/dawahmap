@@ -1,0 +1,10 @@
+{
+  "projectId": "nyc-homeowner-data",
+  "appId": "1:425972275198:web:dd445602784bd1fa1392af",
+  "apiKey": "AIzaSyAEFKjY9UdkPgkXKggmSwOjEIaFKgoZaKk",
+  "authDomain": "nyc-homeowner-data.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-ca34acee-3847-4a5f-836f-aaa2d831fa47",
+  "storageBucket": "nyc-homeowner-data.firebasestorage.app",
+  "messagingSenderId": "425972275198",
+  "measurementId": ""
+}
