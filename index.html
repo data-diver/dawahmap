@@ -71,6 +71,15 @@
   .selection-mode {
     touch-action: none !important;
   }
+  /* Indeterminate progress bar for the loading pill (upstream data can be slow) */
+  @keyframes indeterminate {
+    0%   { transform: translateX(-120%); }
+    100% { transform: translateX(430%); }
+  }
+  .animate-indeterminate {
+    width: 30%;
+    animation: indeterminate 1.15s cubic-bezier(0.65, 0.05, 0.36, 1) infinite;
+  }
   /* Marker Cluster Customization */
   .marker-cluster-small { background-color: rgba(16, 185, 129, 0.6) !important; }
   .marker-cluster-small div { background-color: rgba(16, 185, 129, 1) !important; color: white !important; }

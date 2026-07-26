@@ -58,6 +58,26 @@ const App: React.FC = () => {
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [activePolygon, setActivePolygon] = useState<L.LatLng[] | null>(null);
   const [copied, setCopied] = useState(false);
+  const [loadElapsed, setLoadElapsed] = useState(0);
+
+  // Suffolk / NYS GIS zips are much slower to load than NYC Open Data zips, so
+  // the loading UI tailors its messaging for them.
+  const isSuffolkZip = useMemo(
+    () => !/^(100|101|102|103|104|110|111|112|113|114|116)/.test(selectedZip),
+    [selectedZip]
+  );
+
+  // Drive an elapsed-seconds counter while a load is in flight so the loading
+  // indicator visibly moves instead of appearing frozen during slow fetches.
+  useEffect(() => {
+    if (!loading) { setLoadElapsed(0); return; }
+    const start = Date.now();
+    setLoadElapsed(0);
+    const id = window.setInterval(() => {
+      setLoadElapsed(Math.floor((Date.now() - start) / 1000));
+    }, 500);
+    return () => window.clearInterval(id);
+  }, [loading]);
 
   // Keep the latest registry accessible inside effects without making it a
   // dependency. Otherwise the Firestore active_zips snapshot would change the
@@ -432,11 +452,22 @@ const App: React.FC = () => {
         {/* FLOATING ACTION & STATUS PILLS (CENTERED) */}
         <div className="absolute top-24 left-1/2 -translate-x-1/2 z-[40] flex flex-col items-center gap-3 pointer-events-none w-max">
            {loading && (
-              <div className="bg-white/95 backdrop-blur-md border border-emerald-100 px-4 py-2 rounded-full shadow-lg flex items-center gap-2 animate-in fade-in slide-in-from-top-4 duration-300 pointer-events-auto">
-                 <RefreshCw className="w-4 h-4 text-emerald-500 animate-spin" />
-                 <span className="text-emerald-700 font-black text-[10px] uppercase tracking-[0.15em]">
-                    Syncing Database...
-                 </span>
+              <div className="bg-white/95 backdrop-blur-md border border-emerald-100 px-4 py-3 rounded-2xl shadow-lg flex flex-col gap-2 min-w-[230px] max-w-[280px] animate-in fade-in slide-in-from-top-4 duration-300 pointer-events-auto">
+                 <div className="flex items-center gap-2">
+                    <RefreshCw className="w-4 h-4 text-emerald-500 animate-spin shrink-0" />
+                    <span className="text-emerald-700 font-black text-[10px] uppercase tracking-[0.15em] flex-1">
+                       {isSuffolkZip ? 'Loading Parcel Records' : 'Syncing Database'}
+                    </span>
+                    <span className="text-emerald-400 font-bold text-[10px] tabular-nums">{loadElapsed}s</span>
+                 </div>
+                 <div className="h-1 w-full bg-emerald-100 rounded-full overflow-hidden">
+                    <div className="h-full bg-emerald-500 rounded-full animate-indeterminate" />
+                 </div>
+                 {isSuffolkZip && loadElapsed >= 3 && (
+                    <span className="text-[9px] text-slate-400 font-medium leading-snug">
+                       First load of a new county area can take up to ~20s. It'll be instant next time.
+                    </span>
+                 )}
               </div>
            )}
 
