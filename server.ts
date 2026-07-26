@@ -186,12 +186,17 @@ async function startServer() {
           }
         };
 
-        const fetchGISPage = async (whereStr: string, offset: number = 0) => {
+        // Returns an array of features on success (possibly empty when the page is
+        // past the end of the result set), or null when the request itself failed
+        // (timeout / network / non-200). The null vs [] distinction lets us tell a
+        // genuinely-empty area apart from a transient upstream failure below.
+        const fetchGISPage = async (whereStr: string, offset: number = 0): Promise<any[] | null> => {
           const data = await gisFetch(
             `where=${encodeURIComponent(whereStr)}&outFields=${fields}&f=json&resultRecordCount=${PAGE_SIZE}&resultOffset=${offset}&returnGeometry=true&outSR=4326`,
-            25000
+            35000
           );
-          return data?.features || [];
+          if (data === null) return null;
+          return data.features || [];
         };
 
         // Run page fetches with a small concurrency cap. The NYS GIS server is
@@ -228,8 +233,20 @@ async function startServer() {
 
           const pageResults = await runPool(tasks, GIS_CONCURRENCY);
 
+          // If every page request failed (all null), the upstream GIS server was
+          // unreachable/overloaded — surface a retryable error instead of caching
+          // and returning an empty map that looks like "the zip has no houses".
+          if (pageResults.every(r => r === null)) {
+            console.warn(`Suffolk zip ${effectiveZip}: all GIS page requests failed (upstream timeout/error).`);
+            return res.status(503).json({
+              status: "error",
+              retryable: true,
+              message: "The county parcel service is busy right now. Please try again in a moment."
+            });
+          }
+
           const rawFeaturesMap = new Map();
-          pageResults.flat().forEach((f: any) => {
+          (pageResults.filter(r => r !== null) as any[][]).flat().forEach((f: any) => {
             const id = f.attributes?.OBJECTID || f.attributes?.PRINT_KEY;
             if (id && !rawFeaturesMap.has(id)) {
               rawFeaturesMap.set(id, f);
@@ -315,8 +332,17 @@ async function startServer() {
             }
           }
           const payload = buildPayload({ status: "success", source: "NYS_GIS_SUFFOLK", count: houses.length, houses });
-          propertyCache.set(cacheKey, { ...payload, expires: Date.now() + PROPERTY_TTL_MS });
-          return sendJsonPayload(req, res, payload, Math.floor(PROPERTY_TTL_MS / 1000));
+          // Only cache real results. Caching an empty result (e.g. after some pages
+          // timed out) would pin "0 houses" for hours and make the zip look
+          // permanently broken even after the upstream recovers.
+          if (houses.length > 0) {
+            propertyCache.set(cacheKey, { ...payload, expires: Date.now() + PROPERTY_TTL_MS });
+            return sendJsonPayload(req, res, payload, Math.floor(PROPERTY_TTL_MS / 1000));
+          }
+          // Empty but not a hard failure: return without caching and without long
+          // cache headers so a retry re-queries the upstream.
+          res.setHeader("Cache-Control", "no-store");
+          return res.status(200).json({ status: "success", source: "NYS_GIS_SUFFOLK", count: 0, houses: [] });
         } catch (fetchErr: any) {
           throw fetchErr;
         }
