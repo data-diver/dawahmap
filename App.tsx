@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { House, VisitStatus, RegistryEntry, ProgressState } from './types';
 import MapView from './components/MapView';
 import HouseList from './components/HouseList';
@@ -58,6 +58,12 @@ const App: React.FC = () => {
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [activePolygon, setActivePolygon] = useState<L.LatLng[] | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // Keep the latest registry accessible inside effects without making it a
+  // dependency. Otherwise the Firestore active_zips snapshot would change the
+  // registry identity and re-trigger a full property re-fetch of the same zip.
+  const registryRef = useRef(registry);
+  useEffect(() => { registryRef.current = registry; }, [registry]);
 
   // Authenticate anonymously on load
   useEffect(() => {
@@ -144,7 +150,7 @@ const App: React.FC = () => {
 
     const loadZipData = async () => {
       try {
-        const areaName = registry.find(r => r.zip === selectedZip)?.area || '';
+        const areaName = registryRef.current.find(r => r.zip === selectedZip)?.area || '';
         const apiUrl = `/api/properties?zip=${selectedZip}&area=${encodeURIComponent(areaName)}`;
         console.log(`Fetching properties for zip ${selectedZip} (${areaName})...`);
         const res = await fetch(apiUrl);
@@ -161,7 +167,7 @@ const App: React.FC = () => {
         // Direct Fallback if API route is unavailable
         const isNycZip = /^(100|101|102|103|104|110|111|112|113|114|116)/.test(selectedZip);
         if (isNycZip) {
-          const nycUrl = `https://data.cityofnewyork.us/resource/64uk-42ks.json?zipcode=${selectedZip}&$limit=15000&$order=bbl`;
+          const nycUrl = `https://data.cityofnewyork.us/resource/64uk-42ks.json?zipcode=${selectedZip}&$select=bbl,address,ownername,latitude,longitude,zipcode&$limit=15000`;
           const nycRes = await fetch(nycUrl);
           if (!nycRes.ok) throw new Error(`NYC Open Data API status ${nycRes.status}`);
           const socrataRecords = await nycRes.json();
@@ -237,7 +243,7 @@ const App: React.FC = () => {
     return () => {
       isCancelled = true;
     };
-  }, [selectedZip, registry]);
+  }, [selectedZip]);
 
   // Derived state that combines static open-data with modified states from Firestore / LocalStorage
   const currentHouses = useMemo(() => {

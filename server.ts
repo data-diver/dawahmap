@@ -5,10 +5,47 @@ import { initializeApp } from "firebase/app";
 import { getAuth, signInAnonymously } from "firebase/auth";
 import { getFirestore, writeBatch, doc, getDoc, getDocs, collection } from "firebase/firestore";
 import fs from "fs";
+import zlib from "zlib";
 
 // Read config and zipcodes safely
 let dbInstance: any = null;
 let authInstance: any = null;
+
+// --- Data pipeline performance helpers -------------------------------------
+// Property data changes rarely, so we serve it from a per-instance in-memory
+// cache with a long TTL. This turns repeat zip loads from multi-second upstream
+// fetches into sub-millisecond responses. Payloads are pre-gzipped once so every
+// cache hit avoids re-compressing.
+const PROPERTY_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+type CachedPayload = { raw: string; gz: Buffer; expires: number };
+const propertyCache = new Map<string, CachedPayload>();
+
+function buildPayload(obj: unknown): { raw: string; gz: Buffer } {
+  const raw = JSON.stringify(obj);
+  const gz = zlib.gzipSync(raw);
+  return { raw, gz };
+}
+
+// Send a JSON payload with gzip (when accepted) and CDN/browser cache headers.
+function sendJsonPayload(
+  req: express.Request,
+  res: express.Response,
+  payload: { raw: string; gz: Buffer },
+  maxAgeSec: number
+) {
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader(
+    "Cache-Control",
+    `public, max-age=${maxAgeSec}, stale-while-revalidate=86400`
+  );
+  res.setHeader("Vary", "Accept-Encoding");
+  const acceptsGzip = (req.headers["accept-encoding"] || "").includes("gzip");
+  if (acceptsGzip && payload.gz.length > 0) {
+    res.setHeader("Content-Encoding", "gzip");
+    return res.end(payload.gz);
+  }
+  return res.end(payload.raw);
+}
 
 function getDb() {
   if (!dbInstance) {
@@ -72,12 +109,23 @@ async function startServer() {
     const areaName = (req.query.area as string) || "";
     if (!zip) return res.status(400).json({ status: "error", message: "Zip parameter is required" });
 
+    // Serve from cache instantly when fresh (snappy repeat loads).
+    const cacheKey = `${zip}|${areaName}`;
+    const cached = propertyCache.get(cacheKey);
+    if (cached && cached.expires > Date.now()) {
+      const remainingSec = Math.max(60, Math.floor((cached.expires - Date.now()) / 1000));
+      return sendJsonPayload(req, res, cached, remainingSec);
+    }
+
     try {
       // Determine if NYC zip code (100xx, 103xx, 104xx, 110xx, 111xx, 112xx, 113xx, 114xx, 116xx)
       const isNycZip = /^(100|101|102|103|104|110|111|112|113|114|116)/.test(zip);
 
       if (isNycZip) {
-        const url = `https://data.cityofnewyork.us/resource/64uk-42ks.json?zipcode=${zip}&$limit=15000&$order=bbl`;
+        // Fetch only the columns we render and skip the server-side $order sort:
+        // both shrink the upstream query time and the payload size significantly.
+        const select = "bbl,address,ownername,latitude,longitude,zipcode";
+        const url = `https://data.cityofnewyork.us/resource/64uk-42ks.json?zipcode=${zip}&$select=${select}&$limit=15000`;
         console.log(`Fetching NYC Open Data for zip ${zip}...`);
         const dataRes = await fetch(url);
         if (!dataRes.ok) throw new Error(`NYC Open Data status ${dataRes.status}`);
@@ -103,7 +151,9 @@ async function startServer() {
             });
           }
         }
-        return res.json({ status: "success", source: "NYC_OPEN_DATA", count: houses.length, houses });
+        const payload = buildPayload({ status: "success", source: "NYC_OPEN_DATA", count: houses.length, houses });
+        propertyCache.set(cacheKey, { ...payload, expires: Date.now() + PROPERTY_TTL_MS });
+        return sendJsonPayload(req, res, payload, Math.floor(PROPERTY_TTL_MS / 1000));
       } else {
         // Suffolk County / NYS GIS Tax Parcel Centroid Points
         let effectiveZip = zip;
@@ -244,9 +294,10 @@ async function startServer() {
               });
             }
           }
-          return res.json({ status: "success", source: "NYS_GIS_SUFFOLK", count: houses.length, houses });
+          const payload = buildPayload({ status: "success", source: "NYS_GIS_SUFFOLK", count: houses.length, houses });
+          propertyCache.set(cacheKey, { ...payload, expires: Date.now() + PROPERTY_TTL_MS });
+          return sendJsonPayload(req, res, payload, Math.floor(PROPERTY_TTL_MS / 1000));
         } catch (fetchErr: any) {
-          clearTimeout(timeoutId);
           throw fetchErr;
         }
       }
@@ -535,8 +586,18 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, {
+      // Vite emits content-hashed filenames under /assets, so they can be
+      // cached aggressively and immutably for instant repeat loads.
+      setHeaders: (res, filePath) => {
+        if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
+      },
+    }));
     app.get('*all', (req, res) => {
+      // The HTML shell must always revalidate so new deploys are picked up.
+      res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
