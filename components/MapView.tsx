@@ -188,7 +188,9 @@ const MapController: React.FC<{
       if (currentBatchKey !== lastHousesRef.current) {
         const bounds = L.latLngBounds(houses.map(h => [h.lat, h.lng]));
         if (bounds.isValid()) {
-          map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16, animate: true });
+          // Skip the fly-to animation for large datasets so we don't animate and
+          // mount thousands of markers at the same time (which stalls the UI).
+          map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16, animate: houses.length < 1500 });
           lastHousesRef.current = currentBatchKey;
         }
       }
@@ -243,10 +245,17 @@ const MapView: React.FC<MapViewProps> = ({
     onBoundsChange(bounds);
   };
 
+  // Cap how many markers we mount at once. Mounting thousands of React markers
+  // in a single commit freezes the main thread (~2s for ~5k houses), which reads
+  // as "the app isn't loading". When zoomed out these individual pins are
+  // clustered and indistinguishable anyway; as the user zooms in, the viewport
+  // filter naturally drops the in-view count below the cap so all local pins show.
+  const MAX_MARKERS = 2000;
   const visibleHouses = useMemo(() => {
-    if (!mapBounds) return houses;
-    const bufferedBounds = mapBounds.pad(0.1); 
-    return houses.filter(h => bufferedBounds.contains([h.lat, h.lng]));
+    const inView = mapBounds
+      ? houses.filter(h => mapBounds.pad(0.1).contains([h.lat, h.lng]))
+      : houses;
+    return inView.length > MAX_MARKERS ? inView.slice(0, MAX_MARKERS) : inView;
   }, [houses, mapBounds]);
 
   useEffect(() => {
